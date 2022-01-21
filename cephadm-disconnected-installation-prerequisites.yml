@@ -1,0 +1,266 @@
+---
+# Copyright Red Hat
+# SPDX-License-Identifier: Apache-2.0
+#
+# This playbook configures the Ceph repository.
+# It also installs some prerequisites (podman, lvm2, chronyd, cephadm, ...)
+#
+# Usage:
+#
+# ansible-playbook -i <inventory host file> cephadm-preflight.yml
+#
+# You can limit the execution to a set of hosts by using `--limit` option:
+#
+# ansible-playbook -i <inventory host file> cephadm-preflight.yml --limit <my_osd_group|my_node_name>
+#
+# You can override variables using `--extra-vars` parameter:
+#
+# ansible-playbook -i <inventory host file> cephadm-preflight.yml --extra-vars "ceph_origin=rhcs"
+#
+# If you plan to deploy 'client' nodes, you must add a group called 'clients' in your inventory:
+#
+# $ cat hosts
+# mynode1
+# mynode2
+# mynode3
+#
+# [clients]
+# client1
+# client2
+# client3
+#
+# Then, you can run the the same way as shown above. The playbook will automatically install
+# chronyd and ceph-common on those nodes.
+
+- hosts: localhost
+  become: true
+  gather_facts: true
+  tasks:
+    - name: generate self-signed certificate
+#        - name: set_fact subj_alt_names
+#          set_fact:
+#            subj_alt_names: >
+#              {% for host in groups[mgr_group_name] | default(groups[mon_group_name]) -%}
+#              DNS:{{ hostvars[host]['ansible_facts']['hostname'] }},DNS:{{ hostvars[host]['ansible_facts']['fqdn'] }},IP:{{ hostvars[host]['dashboard_server_addr'] }}{% if not loop.last %},{% endif %}
+#              {%- endfor -%}
+#
+#        - name: create tempfile for openssl certificate and key generation
+#          tempfile:
+#            state: file
+#          register: openssl_config_file
+#
+#        - name: copy the openssl configuration file
+#          copy:
+#            src: "{{ '/etc/pki/tls/openssl.cnf' if ansible_facts['os_family'] == 'RedHat' else '/etc/ssl/openssl.cnf' }}"
+#            dest: '{{ openssl_config_file.path }}'
+#            remote_src: true
+#
+#        - name: add subjectAltName to the openssl configuration
+#          ini_file:
+#            path: '{{ openssl_config_file.path }}'
+#            section: v3_ca
+#            option: subjectAltName
+#            value: '{{ subj_alt_names | trim }}'
+#
+#        - name: generate a Self Signed OpenSSL certificate for dashboard
+#          shell: |
+#            test -f /etc/ceph/ceph-dashboard.key -a -f /etc/ceph/ceph-dashboard.crt || \
+#            openssl req -new -nodes -x509 -subj '/O=IT/CN={{ dashboard_certificate_cn }}/' -config {{ openssl_config_file.path }} -days 3650 -keyout /etc/ceph/ceph-dashboard.key -out /etc/ceph/ceph-dashboard.crt -extensions v3_ca
+#
+#        - name: remove the openssl tempfile
+#          file:
+#            path: '{{ openssl_config_file.path }}'
+#            state: absent
+
+- hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: import_role ceph_defaults
+      import_role:
+        name: ceph_defaults
+    - name: redhat family of OS related tasks
+      when: ansible_facts['distribution'] == 'CentOS' or ansible_facts['distribution'] == 'RedHat'
+      block:
+        - name: rhcs related tasks
+          when: ceph_origin == 'rhcs'
+          block:
+            - name: enable red hat storage tools repository
+              rhsm_repository:
+                name: "rhceph-{{ ceph_rhcs_version }}-tools-for-rhel-8-{{ ansible_facts['architecture'] }}-rpms"
+
+        - name: enable repo from download.ceph.com
+          when: ceph_origin == 'community'
+          block:
+            - name: configure red hat ceph community repository stable key
+              rpm_key:
+                key: "{{ ceph_stable_key }}"
+                state: present
+              register: result
+              until: result is succeeded
+
+            - name: configure red hat ceph stable community repository
+              yum_repository:
+                name: ceph_stable
+                description: Ceph Stable $basearch repo
+                gpgcheck: yes
+                state: present
+                gpgkey: "{{ ceph_stable_key }}"
+                baseurl: "{{ ceph_mirror }}/rpm-{{ ceph_release }}/el{{ ansible_facts['distribution_major_version'] }}/$basearch"
+                file: ceph_stable
+                priority: '2'
+              register: result
+              until: result is succeeded
+
+            - name: configure red hat ceph stable noarch community repository
+              yum_repository:
+                name: ceph_stable_noarch
+                description: Ceph Stable noarch repo
+                gpgcheck: yes
+                state: present
+                gpgkey: "{{ ceph_stable_key }}"
+                baseurl: "{{ ceph_mirror }}/rpm-{{ ceph_release }}/el{{ ansible_facts['distribution_major_version'] }}/noarch"
+                file: ceph_stable
+                priority: '2'
+              register: result
+              until: result is succeeded
+
+        - name: enable repo from shaman - dev
+          when: ceph_origin == 'shaman'
+          block:
+            - name: fetch ceph red hat development repository
+              uri:
+                url: https://shaman.ceph.com/api/repos/ceph/{{ ceph_dev_branch }}/{{ ceph_dev_sha1 }}/centos/{{ ansible_facts['distribution_major_version'] }}/repo?arch={{ ansible_facts['architecture'] }}  # noqa 204
+                return_content: yes
+              register: ceph_dev_yum_repo
+
+            - name: configure ceph red hat development repository
+              copy:
+                content: "{{ ceph_dev_yum_repo.content }}"
+                dest: /etc/yum.repos.d/ceph-dev.repo
+                owner: root
+                group: root
+                mode: '0644'
+                backup: yes
+
+            - name: remove ceph_stable repositories
+              yum_repository:
+                name: '{{ item }}'
+                file: ceph_stable
+                state: absent
+              with_items:
+                - ceph_stable
+                - ceph_stable_noarch
+
+        - name: install epel-release
+          package:
+            name: epel-release
+            state: present
+          register: result
+          until: result is succeeded
+          when: ansible_facts['distribution'] == 'CentOS'
+
+
+        - name: install prerequisites packages
+          package:
+            name: "{{ ceph_client_pkgs if group_names == [client_group] else ceph_pkgs | unique }}"
+            state: "{{ (upgrade_ceph_packages | bool) | ternary('latest', 'present') }}"
+          register: result
+          until: result is succeeded
+
+        - name: ensure chronyd is running
+          service:
+            name: chronyd
+            state: started
+            enabled: yes
+
+    - name: Ubuntu related tasks
+      when: ansible_facts['distribution'] == 'Ubuntu'
+      block:
+        - name: enable repo from download.ceph.com
+          block:
+            - name: prevent ceph certificate error
+              apt:
+                name: ca-certificates
+                state: latest
+                update_cache: yes
+              register: result
+              until: result is succeeded
+
+            - name: configure ceph community repository stable key
+              apt_key:
+                url: "{{ ceph_stable_key }}"
+                state: present
+
+            - name: configure Ceph community repository
+              when: ceph_origin == 'community'
+              apt_repository:
+                repo: "deb https://download.ceph.com/debian-{{ ceph_release }}/ {{ ansible_facts['distribution_release'] }} main"
+                state: present
+                filename: ceph
+                update_cache: no
+
+            - name: configure Ceph testing repository
+              when: ceph_origin == 'testing'
+              apt_repository:
+                repo: "deb https://download.ceph.com/debian-testing/ {{ ansible_facts['distribution_release'] }} main"
+                state: present
+                filename: ceph
+                update_cache: no
+
+        - name: install prerequisites packages
+          apt:
+            name: "{{ 'ceph-common' if group_names == [client_group] else ['python3','cephadm','ceph-common'] | unique }}"
+            state: "{{ (upgrade_ceph_packages | bool) | ternary('latest', 'present') }}"
+            update_cache: yes
+          register: result
+          until: result is succeeded
+
+        - name: install container engine
+          block:
+            - name: install podman
+              when: ansible_facts['distribution_version'] is version('20.10', '>=') and group_names != [client_group]
+              apt:
+                name: podman
+                state: present
+                update_cache: yes
+              register: result
+              until: result is succeeded
+
+            - name: install docker
+              when: ansible_facts['distribution_version'] is version('20.10', '<') and group_names != [client_group]
+              block:
+                - name: uninstall old version packages
+                  apt:
+                    name: "{{ item }}"
+                    state: absent
+                  loop:
+                    - docker
+                    - docker-engine
+                    - docker.io
+                    - containerd
+                    - runc
+
+                - name: configure docker repository key
+                  apt_key:
+                    url: "https://download.docker.com/linux/ubuntu/gpg"
+                    state: present
+
+                - name: setup docker repository
+                  apt_repository:
+                    repo: "deb https://download.docker.com/linux/ubuntu {{ ansible_facts['distribution_release'] }} stable"
+                    state: present
+                    filename: docker
+                    update_cache: no
+
+                - name: install docker
+                  apt:
+                    name: "{{ item }}"
+                    state: present
+                    update_cache: yes
+                  register: result
+                  until: result is succeeded
+                  loop:
+                    - docker-ce
+                    - docker-ce-cli
+                    - containerd.io
