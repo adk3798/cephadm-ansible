@@ -1,0 +1,13 @@
+---
+- name: bootstrap initial cluster
+  hosts: admin
+  tasks:
+  - name: run bootstrap
+    ceph_orch:
+      cli_binary: true
+      command: "cephadm bootstrap --mon-ip 192.168.122.169"
+
+  - name: get the cephadm ssh pub key
+    ceph_orch:
+      command: "cephadm get-pub-key"
+    register: pub_key

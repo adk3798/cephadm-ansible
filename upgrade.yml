@@ -1,0 +1,7 @@
+---
+- name: upgrade cluster
+  hosts: "{{ groups['admin'][0] }}"
+  tasks:
+    - name: upgrade cmd
+      ceph_orch:
+        command: "orch upgrade start {{ image }}"

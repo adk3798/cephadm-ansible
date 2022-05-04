@@ -1,0 +1,15 @@
+---
+- name: all available devices osds
+  hosts: "{{ groups['admin'][0] }}"
+  tasks:
+    - name: apply osd spec
+      ceph_orch:
+        command: "orch apply osd -i -"
+        stdin: |
+          service_type: osd
+          service_id: osds_all
+          placement:
+            host_pattern: "*"
+          spec:
+            data_devices:
+              all: true

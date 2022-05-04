@@ -1,0 +1,9 @@
+---
+- name: add_hosts
+  hosts: "{{ groups.get('all') | difference(groups.get('admin')) }}"
+  tasks:
+    - name: add hosts
+      ceph_orch:
+        command: "orch host add {{ inventory_hostname }} {{ hostvars[inventory_hostname]['ansible_facts'][cni]['ipv4']['address'] }}"
+      delegate_to: "{{ groups['admin'][0] }}"
+ 

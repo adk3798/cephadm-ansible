@@ -1,0 +1,17 @@
+--- 
+- name: distribute-keys
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: get the cephadm ssh pub key
+      ceph_orch:
+        command: "cephadm get-pub-key"
+      changed_when: false
+      run_once: true
+      register: cephadm_pubpkey
+      delegate_to: "{{ groups['admin'][0] }}"
+
+    - name: allow cephadm key for root account
+      authorized_key:
+        user: root
+        key: '{{ cephadm_pubpkey.stdout }}'

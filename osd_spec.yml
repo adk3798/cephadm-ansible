@@ -1,0 +1,7 @@
+service_type: osd
+service_id: osds_all
+placement:
+  host_pattern: "*"
+spec:
+  data_devices:
+    all: true
